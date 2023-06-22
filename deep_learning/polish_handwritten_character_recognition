@@ -1,0 +1,280 @@
+#Database: http://www.astrj.com/Development-of-Extensive-Polish-Handwritten-Characters-Database-for-Text-Recognition,122567,0,2.html
+
+#CNN M
+
+#libraries
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+import cv2
+import glob
+
+from tensorflow.keras import applications, optimizers, Sequential
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.models import Sequential, Model, load_model
+from tensorflow.keras.layers import Dropout, Flatten, Dense, Activation, MaxPooling2D, Conv2D
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping
+
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix
+
+import gc
+import random
+import pickle
+import time
+import threading
+import concurrent.futures
+from PIL import Image
+
+start_time = time.time()
+
+#data path
+#data_dir = "H:/My Drive/ML Project/extracted_signs"
+data_dir = "E:/Google Drive/ML Project/extracted_signs"
+
+#example #1
+#img = plt.imread("H:/My Drive/ML Project/extracted_signs/10/10_0000_19-06-06_2000_M_2F.png")
+img = plt.imread("E:/Google Drive/ML Project/extracted_signs/77/77_0008_98_K_2F.png")
+plt.imshow(img)
+
+#Image size
+SIZE = 28
+
+#labels dictionary
+label_dict = {10: 'a', 11: 'b', 12: 'c', 13: 'd', 14: 'e', 15: 'f', 16: 'g', 17: 'h', 18: 'i', 19: 'j',
+              20: 'k', 21: 'l', 22: 'm', 23: 'n', 24: 'o', 25: 'p', 26: 'q', 27: 'r', 28: 's', 29: 't',
+              30: 'u', 31: 'v', 32: 'w', 33: 'x', 34: 'y', 35: 'z', 36: 'A', 37: 'B', 38: 'C', 39: 'D',
+              40: 'E', 41: 'F', 42: 'G', 43: 'H', 44: 'I', 45: 'J', 46: 'K', 47: 'L', 48: 'M', 49: 'N',
+              50: 'O', 51: 'P', 52: 'Q', 53: 'R', 54: 'S', 55: 'T', 56: 'U', 57: 'V', 58: 'W', 59: 'X',
+              60: 'Y', 61: 'Z', 62: 'ą', 63: 'ć', 64: 'ę', 65: 'ł', 66: 'ń', 67: 'ó', 68: 'ś', 69: 'ź',
+              70: 'ż', 71: 'Ą', 72: 'Ć', 73: 'Ę', 74: 'Ł', 75: 'Ń', 76: 'Ó', 77: 'Ś', 78: 'Ź', 79: 'Ż'}
+
+
+#create training and data set
+data = []
+data_labels = []
+all_img_array = []
+picture_counts = {}
+
+n_class = len(os.listdir(data_dir))
+
+
+def process_images(znak):
+    count = 0
+    if int(znak) in label_dict.keys():
+        picture_counts[label_dict[int(znak)]] = 0
+        for picture in glob.glob(data_dir + '/' + znak + '/*.png'):
+            if 'С' in picture:
+                print(f"Skipping file {picture}...")
+                continue
+            
+            img_array = cv2.imread(picture, cv2.IMREAD_GRAYSCALE)
+            img_pil = Image.fromarray(img_array)
+            img_28x28 = np.array(img_pil.resize((SIZE, SIZE), resample=Image.Resampling.LANCZOS))
+            img_array_f = (img_28x28.flatten())
+    
+            all_img_array.append(img_array)
+            data.append(img_array_f)
+            data_labels.append(int(znak)-10)
+            
+            picture_counts[label_dict[int(znak)]] += 1
+            count += 1
+            if count >= 1000:
+                break
+
+threads = []
+for znak in os.listdir(data_dir):
+    thread = threading.Thread(target=process_images, args=(znak,))
+    thread.start()
+    threads.append(thread)
+
+for thread in threads:
+    thread.join()
+
+#number of pictures in each class
+print(picture_counts)
+
+# Stack the data list into a single numpy array
+data = np.vstack(data)
+data_labels = np.array(data_labels, dtype='uint8')
+
+# Split data into train, validation, and test sets
+X_train_val, X_test, Y_train_val, Y_test = train_test_split(data, data_labels, test_size=0.2, random_state=42)
+X_train, X_val, Y_train, Y_val = train_test_split(X_train_val, Y_train_val, test_size=0.25, random_state=42)
+
+# Normalize pixel values
+X_train = X_train / 255
+X_val = X_val / 255
+X_test = X_test / 255
+
+# One-hot encode labels
+Y_train = to_categorical(Y_train, n_class)
+Y_val = to_categorical(Y_val, n_class)
+Y_test = to_categorical(Y_test, n_class)
+
+# Reshape data into 4D arrays
+X_train = np.reshape(X_train, (X_train.shape[0], 28, 28, 1))
+X_val = np.reshape(X_val, (X_val.shape[0], 28, 28, 1))
+X_test = np.reshape(X_test, (X_test.shape[0], 28, 28, 1))
+
+print(X_train.shape)
+print(X_val.shape)
+print(X_test.shape)
+
+
+# Randomly select an image from X_train
+idx = random.randint(0, len(X_train)-1)
+idx_label = np.argmax(Y_train[idx])
+
+plt.imshow(X_train[idx].reshape(28, 28), cmap='gray', label=Y_train[idx])
+plt.title(f'Label: {idx_label}')
+plt.show()
+
+# visualize some images 
+plt.figure(figsize=(12,6))
+for i in range(8):
+    plt.subplot(2,4,(i+1))
+    plt.imshow((X_train[i,:,:,0]),cmap="gray")
+    plt.title('true label: '+str(np.argmax(Y_train,axis=1)[i]))
+
+
+#CNN
+model = Sequential()
+
+model.add(Conv2D(64, kernel_size = (3, 3), activation = "relu", padding = "Same", input_shape = (28,28,1)))
+model.add(Conv2D(64, kernel_size = (3, 3), activation = "relu", padding = "Same"))
+model.add(MaxPooling2D(pool_size = (3, 3)))
+model.add(Dropout(0.25))
+
+model.add(Conv2D(128, kernel_size = (3, 3), activation = "relu", padding = "Same"))
+model.add(Conv2D(128, kernel_size = (3, 3), activation = "relu", padding = "Same"))
+model.add(MaxPooling2D(pool_size = (3, 3)))
+model.add(Dropout(0.40))
+
+model.add(Flatten())
+model.add(Dense(150, activation = "relu"))
+model.add(Dropout(0.30))
+model.add(Dense(n_class, activation = "softmax"))
+
+#compile model and intitialize weights
+model.compile(loss='categorical_crossentropy',
+              optimizer='adam',
+              metrics=['accuracy'])
+
+model.summary()
+
+early_stop = EarlyStopping(monitor='val_loss', patience=5, verbose=1)
+history=model.fit(X_train, Y_train, 
+                  batch_size=128, 
+                  epochs=50,
+                  verbose=2, 
+                  validation_data=(X_val, Y_val),
+                  callbacks=[early_stop]
+                  )
+
+
+# plot the development of the accuracy and loss during training
+plt.figure(figsize=(12,4))
+plt.subplot(1,2,(1))
+plt.plot(history.history['accuracy'],linestyle='-.')
+plt.plot(history.history['val_accuracy'])
+plt.title('model accuracy')
+plt.ylabel('accuracy')
+plt.xlabel('epoch')
+plt.legend(['train', 'valid'], loc='lower right')
+plt.subplot(1,2,(2))
+plt.plot(history.history['loss'],linestyle='-.')
+plt.plot(history.history['val_loss'])
+plt.title('model loss')
+plt.ylabel('loss')
+plt.xlabel('epoch')
+plt.legend(['train', 'valid'], loc='upper right')
+plt.show()
+
+#Predictions
+predictions=model.predict(X_test)
+max_indices = np.argmax(predictions, axis=1)
+max_p_values = np.max(predictions, axis=1)
+predicted_label = [label_dict[index+10] for index in max_indices]
+
+#true labels
+true_indices = np.argmax(Y_test, axis=1)
+true_p_values = np.max(Y_test, axis=1)
+true_label = [label_dict[index+10] for index in true_indices]
+
+probabilities = pd.DataFrame({'P': max_p_values, 
+                              'predicted_label': predicted_label, 
+                              'true_label': true_label})
+
+probabilities['match'] = np.where(probabilities['predicted_label'] == probabilities['true_label'], 'Y', 'N')
+
+#loss, accuracy
+loss, accuracy = model.evaluate(X_test, Y_test)
+print(f"Loss: {loss:.4f}, Accuracy: {accuracy:.4f}")
+
+print(confusion_matrix(np.argmax(Y_test,axis=1),np.argmax(predictions,axis=1)))
+acc_fc = np.sum(np.argmax(Y_test,axis=1)==np.argmax(predictions,axis=1))/len(predictions)
+print("Acc = " , acc_fc)
+
+# Count matches per class
+class_counts = probabilities.groupby(['true_label', 'match']).size().unstack(fill_value=0)
+class_counts['accuracy'] = (class_counts['Y'] / (class_counts['Y'] + class_counts['N'])) * 100
+class_counts = class_counts.sort_values('accuracy', ascending=False)
+class_counts['accuracy'] = class_counts['accuracy'].apply(lambda x: "{:.2f}%".format(x))
+print(class_counts)
+
+
+#wrong matches with lowest probability
+n_match = probabilities.loc[probabilities['match'] == 'N']
+n_match_sorted = n_match.sort_values('P',ascending=True)
+low_predictions = n_match_sorted.head(16)
+
+fig, axs = plt.subplots(nrows=4, ncols=4, figsize=(12, 6))
+for i, ax in enumerate(axs.flatten()):
+    see_pred = low_predictions.index[i]
+    ax.imshow(X_test[see_pred], cmap="gray")
+    ax.set_title('True: ' + probabilities['true_label'][see_pred] + ', Pred: ' + probabilities['predicted_label'][see_pred] + ', P: ' + f"{low_predictions.iloc[i]['P']:.3f}")
+plt.tight_layout()
+plt.show()
+
+#correct matches with highest probability
+n_match = probabilities.loc[probabilities['match'] == 'Y']
+n_match_sorted = n_match.sort_values('P',ascending=False)
+low_predictions = n_match_sorted.head(16)
+
+fig, axs = plt.subplots(nrows=4, ncols=4, figsize=(12, 6))
+for i, ax in enumerate(axs.flatten()):
+    see_pred = low_predictions.index[i]
+    ax.imshow(X_test[see_pred], cmap="gray")
+    ax.set_title('True: ' + probabilities['true_label'][see_pred] + ', Pred: ' + probabilities['predicted_label'][see_pred] + ', P: ' + f"{low_predictions.iloc[i]['P']:.3f}")
+plt.tight_layout()
+plt.show()
+
+#RESULTS ANALYSIS
+see_letter = "p"
+
+wrong_p_breakdown = probabilities[(probabilities['true_label'] == see_letter) & (probabilities['match'] == 'N')].groupby('predicted_label').size()
+wrong_p_breakdown = wrong_p_breakdown.sort_values(ascending=False)
+print(wrong_p_breakdown)
+
+probabilities_p = probabilities.loc[probabilities['true_label'] == see_letter]
+#probabilities_p = probabilities_p.loc[probabilities['predicted_label'] == "P"]
+print(probabilities_p)
+n_match_p = probabilities_p.loc[probabilities_p['match'] == 'N']
+n_match_sorted_p = n_match_p.sort_values('P',ascending=False)
+low_predictions_p = n_match_sorted_p.head(8)
+
+fig, axs = plt.subplots(nrows=2, ncols=4, figsize=(12, 6))
+for i, ax in enumerate(axs.flatten()):
+    see_pred = low_predictions_p.index[i]
+    ax.imshow(X_test[see_pred], cmap="gray")
+    ax.set_title('True: ' + probabilities['true_label'][see_pred] + ', Pred: ' + probabilities['predicted_label'][see_pred] + ', P: ' + str(probabilities['P'][see_pred]))
+plt.tight_layout()
+plt.show()
+
+#end print
+end_time = time.time()
+running_time = end_time - start_time
+print("Running time:", running_time, "seconds")
